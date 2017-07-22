@@ -5,7 +5,6 @@ using System.Threading;
 
 namespace Titanium.Web.Proxy.Network.Certificate
 {
-
     /// <summary>
     /// Certificate Maker - uses MakeCert
     /// Calls COM objects using reflection
@@ -81,7 +80,7 @@ namespace Titanium.Web.Proxy.Network.Certificate
         }
 
         private X509Certificate2 MakeCertificate(bool isRoot, string subject, string fullSubject,
-            int privateKeyLength, string hashAlg, DateTime validFrom, DateTime validTo, 
+            int privateKeyLength, string hashAlg, DateTime validFrom, DateTime validTo,
             X509Certificate2 signingCertificate)
         {
             if (isRoot != (null == signingCertificate))
@@ -115,7 +114,7 @@ namespace Titanium.Web.Proxy.Network.Certificate
                 typeX509PrivateKey.InvokeMember("ProviderName", BindingFlags.PutDispProperty, null, sharedPrivateKey, typeValue);
                 typeValue[0] = 2;
                 typeX509PrivateKey.InvokeMember("ExportPolicy", BindingFlags.PutDispProperty, null, sharedPrivateKey, typeValue);
-                typeValue = new object[] { (isRoot ? 2 : 1) };
+                typeValue = new object[] { isRoot ? 2 : 1 };
                 typeX509PrivateKey.InvokeMember("KeySpec", BindingFlags.PutDispProperty, null, sharedPrivateKey, typeValue);
 
                 if (!isRoot)
@@ -187,7 +186,7 @@ namespace Titanium.Web.Proxy.Network.Certificate
                 var extNames = Activator.CreateInstance(typeExtNames);
                 var altDnsNames = Activator.CreateInstance(typeCAlternativeName);
 
-                typeValue = new object[] { 3,  subject };
+                typeValue = new object[] { 3, subject };
                 typeCAlternativeName.InvokeMember("InitializeFromString", BindingFlags.InvokeMethod, null, altDnsNames, typeValue);
 
                 typeValue = new[] { altDnsNames };
@@ -238,10 +237,7 @@ namespace Titanium.Web.Proxy.Network.Certificate
             {
                 typeValue[0] = fullSubject;
                 typeX509Enrollment.InvokeMember("CertificateFriendlyName", BindingFlags.PutDispProperty, null, x509Enrollment, typeValue);
-
             }
-
-            var members = typeX509Enrollment.GetMembers();
 
             typeValue[0] = 0;
 
@@ -253,7 +249,7 @@ namespace Titanium.Web.Proxy.Network.Certificate
 
             try
             {
-                var empty = (string)typeX509Enrollment.InvokeMember("CreatePFX", BindingFlags.InvokeMethod, null, x509Enrollment, typeValue);
+                string empty = (string)typeX509Enrollment.InvokeMember("CreatePFX", BindingFlags.InvokeMethod, null, x509Enrollment, typeValue);
                 return new X509Certificate2(Convert.FromBase64String(empty), string.Empty, X509KeyStorageFlags.Exportable);
             }
             catch (Exception)
@@ -264,8 +260,8 @@ namespace Titanium.Web.Proxy.Network.Certificate
             return null;
         }
 
-        private X509Certificate2 MakeCertificateInternal(string sSubjectCN, bool isRoot, 
-            bool switchToMTAIfNeeded, 
+        private X509Certificate2 MakeCertificateInternal(string sSubjectCN, bool isRoot,
+            bool switchToMTAIfNeeded,
             X509Certificate2 signingCert = null)
         {
             X509Certificate2 rCert = null;
@@ -283,22 +279,20 @@ namespace Titanium.Web.Proxy.Network.Certificate
             }
 
             //Subject
-            var fullSubject = $"CN={sSubjectCN}";
+            string fullSubject = $"CN={sSubjectCN}";
             //Sig Algo
-            var HashAlgo = "SHA256";
+            string HashAlgo = "SHA256";
             //Grace Days
-            var GraceDays = -366;
+            int GraceDays = -366;
             //ValiDays
-            var ValidDays = 1825;
+            int ValidDays = 1825;
             //KeyLength
-            var keyLength = 2048;
+            int keyLength = 2048;
 
             var graceTime = DateTime.Now.AddDays(GraceDays);
             var now = DateTime.Now;
-            rCert = !isRoot ? MakeCertificate(false, sSubjectCN, fullSubject, keyLength, HashAlgo, graceTime, now.AddDays(ValidDays), signingCert) :
-                MakeCertificate(true, sSubjectCN, fullSubject, keyLength, HashAlgo, graceTime, now.AddDays(ValidDays), null);
+            rCert = MakeCertificate(isRoot, sSubjectCN, fullSubject, keyLength, HashAlgo, graceTime, now.AddDays(ValidDays), isRoot ? null : signingCert);
             return rCert;
         }
     }
-
 }

@@ -1,18 +1,20 @@
 using System;
-using System.Collections.Generic;
-using System.Text;
+using System.IO;
+using System.Net;
 using System.Threading.Tasks;
+using Titanium.Web.Proxy.Helpers;
 using Titanium.Web.Proxy.Models;
 using Titanium.Web.Proxy.Network.Tcp;
-using Titanium.Web.Proxy.Shared;
 
 namespace Titanium.Web.Proxy.Http
 {
     /// <summary>
     /// Used to communicate with the server over HTTP(S)
     /// </summary>
-    public class HttpWebClient
+    public class HttpWebClient : IDisposable
     {
+        private int bufferSize;
+
         /// <summary>
         /// Connection to server
         /// </summary>
@@ -22,14 +24,22 @@ namespace Titanium.Web.Proxy.Http
         /// Request ID.
         /// </summary>
         public Guid RequestId { get; }
+
+        /// <summary>
+        /// Override UpStreamEndPoint for this request; Local NIC via request is made
+        /// </summary>
+        public IPEndPoint UpStreamEndPoint { get; set; }
+
         /// <summary>
         /// Headers passed with Connect.
         /// </summary>
-        public List<HttpHeader> ConnectHeaders { get; set; }
+        public ConnectRequest ConnectRequest { get; set; }
+
         /// <summary>
         /// Web Request.
         /// </summary>
         public Request Request { get; set; }
+
         /// <summary>
         /// Web Response.
         /// </summary>
@@ -44,11 +54,12 @@ namespace Titanium.Web.Proxy.Http
         /// <summary>
         /// Is Https?
         /// </summary>
-        public bool IsHttps => Request.RequestUri.Scheme == Uri.UriSchemeHttps;
+        public bool IsHttps => Request.IsHttps;
 
-
-        internal HttpWebClient()
+        internal HttpWebClient(int bufferSize)
         {
+            this.bufferSize = bufferSize;
+
             RequestId = Guid.NewGuid();
             Request = new Request();
             Response = new Response();
@@ -63,7 +74,7 @@ namespace Titanium.Web.Proxy.Http
             connection.LastAccess = DateTime.Now;
             ServerConnection = connection;
         }
-  
+
 
         /// <summary>
         /// Prepare and send the http(s) request
@@ -73,52 +84,49 @@ namespace Titanium.Web.Proxy.Http
         {
             var stream = ServerConnection.Stream;
 
-            var requestLines = new StringBuilder();
+            byte[] requestBytes;
+            using (var ms = new MemoryStream())
+            using (var writer = new HttpRequestWriter(ms, bufferSize))
+            {
+                var upstreamProxy = ServerConnection.UpStreamHttpProxy;
 
-            //prepare the request & headers
-            if ((ServerConnection.UpStreamHttpProxy != null && ServerConnection.IsHttps == false) || (ServerConnection.UpStreamHttpsProxy != null && ServerConnection.IsHttps))
-            {
-                requestLines.AppendLine($"{Request.Method} {Request.RequestUri.AbsoluteUri} HTTP/{Request.HttpVersion.Major}.{Request.HttpVersion.Minor}");
-            }
-            else
-            {
-                requestLines.AppendLine($"{Request.Method} {Request.RequestUri.PathAndQuery} HTTP/{Request.HttpVersion.Major}.{Request.HttpVersion.Minor}");
-            }
+                bool useUpstreamProxy = upstreamProxy != null && ServerConnection.IsHttps == false;
 
-            //Send Authentication to Upstream proxy if needed
-            if (ServerConnection.UpStreamHttpProxy != null && ServerConnection.IsHttps == false && !string.IsNullOrEmpty(ServerConnection.UpStreamHttpProxy.UserName) && ServerConnection.UpStreamHttpProxy.Password != null)
-            {
-                requestLines.AppendLine("Proxy-Connection: keep-alive");
-                requestLines.AppendLine("Proxy-Authorization" + ": Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes(
-                                            $"{ServerConnection.UpStreamHttpProxy.UserName}:{ServerConnection.UpStreamHttpProxy.Password}")));
-            }
-            //write request headers
-            foreach (var headerItem in Request.RequestHeaders)
-            {
-                var header = headerItem.Value;
-                if (headerItem.Key != "Proxy-Authorization")
+                //prepare the request & headers
+                if (useUpstreamProxy)
                 {
-                    requestLines.AppendLine($"{header.Name}: {header.Value}");
+                    writer.WriteLine($"{Request.Method} {Request.OriginalRequestUrl} HTTP/{Request.HttpVersion.Major}.{Request.HttpVersion.Minor}");
                 }
-            }
-
-            //write non unique request headers
-            foreach (var headerItem in Request.NonUniqueRequestHeaders)
-            {
-                var headers = headerItem.Value;
-                foreach (var header in headers)
+                else
                 {
-                    if (headerItem.Key != "Proxy-Authorization")
+                    writer.WriteLine($"{Request.Method} {Request.RequestUri.PathAndQuery} HTTP/{Request.HttpVersion.Major}.{Request.HttpVersion.Minor}");
+                }
+
+
+                //Send Authentication to Upstream proxy if needed
+                if (upstreamProxy != null
+                    && ServerConnection.IsHttps == false
+                    && !string.IsNullOrEmpty(upstreamProxy.UserName)
+                    && upstreamProxy.Password != null)
+                {
+                    HttpHeader.ProxyConnectionKeepAlive.WriteToStream(writer);
+                    HttpHeader.GetProxyAuthorizationHeader(upstreamProxy.UserName, upstreamProxy.Password).WriteToStream(writer);
+                }
+
+                //write request headers
+                foreach (var header in Request.RequestHeaders)
+                {
+                    if (header.Name != "Proxy-Authorization")
                     {
-                        requestLines.AppendLine($"{header.Name}: {header.Value}");
+                        header.WriteToStream(writer);
                     }
                 }
+
+                writer.WriteLine();
+                writer.Flush();
+
+                requestBytes = ms.ToArray();
             }
-
-            requestLines.AppendLine();
-
-            var request = requestLines.ToString();
-            var requestBytes = Encoding.ASCII.GetBytes(request);
 
             await stream.WriteAsync(requestBytes, 0, requestBytes.Length);
             await stream.FlushAsync();
@@ -127,19 +135,22 @@ namespace Titanium.Web.Proxy.Http
             {
                 if (Request.ExpectContinue)
                 {
-                    var httpResult = (await ServerConnection.StreamReader.ReadLineAsync()).Split(ProxyConstants.SpaceSplit, 3);
-                    var responseStatusCode = httpResult[1].Trim();
-                    var responseStatusDescription = httpResult[2].Trim();
+                    string httpStatus = await ServerConnection.StreamReader.ReadLineAsync();
+
+                    Version version;
+                    int responseStatusCode;
+                    string responseStatusDescription;
+                    Response.ParseResponseLine(httpStatus, out version, out responseStatusCode, out responseStatusDescription);
 
                     //find if server is willing for expect continue
-                    if (responseStatusCode.Equals("100")
-                    && responseStatusDescription.Equals("continue", StringComparison.CurrentCultureIgnoreCase))
+                    if (responseStatusCode == (int)HttpStatusCode.Continue
+                        && responseStatusDescription.Equals("continue", StringComparison.CurrentCultureIgnoreCase))
                     {
                         Request.Is100Continue = true;
                         await ServerConnection.StreamReader.ReadLineAsync();
                     }
-                    else if (responseStatusCode.Equals("417")
-                         && responseStatusDescription.Equals("expectation failed", StringComparison.CurrentCultureIgnoreCase))
+                    else if (responseStatusCode == (int)HttpStatusCode.ExpectationFailed
+                             && responseStatusDescription.Equals("expectation failed", StringComparison.CurrentCultureIgnoreCase))
                     {
                         Request.ExpectationFailed = true;
                         await ServerConnection.StreamReader.ReadLineAsync();
@@ -155,82 +166,68 @@ namespace Titanium.Web.Proxy.Http
         internal async Task ReceiveResponse()
         {
             //return if this is already read
-            if (Response.ResponseStatusCode != null) return;
+            if (Response.ResponseStatusCode != 0)
+                return;
 
-            var httpResult = (await ServerConnection.StreamReader.ReadLineAsync()).Split(ProxyConstants.SpaceSplit, 3);
+            string httpStatus = await ServerConnection.StreamReader.ReadLineAsync();
+            if (httpStatus == null)
+            {
+                throw new IOException();
+            }
 
-            if (string.IsNullOrEmpty(httpResult[0]))
+            if (httpStatus == string.Empty)
             {
                 //Empty content in first-line, try again
-                httpResult = (await ServerConnection.StreamReader.ReadLineAsync()).Split(ProxyConstants.SpaceSplit, 3);
+                httpStatus = await ServerConnection.StreamReader.ReadLineAsync();
             }
 
-            var httpVersion = httpResult[0].Trim().ToLower();
-
-            var version = new Version(1, 1);
-            if (0 == string.CompareOrdinal(httpVersion, "http/1.0"))
-            {
-                version = new Version(1, 0);
-            }
+            Version version;
+            int statusCode;
+            string statusDescription;
+            Response.ParseResponseLine(httpStatus, out version, out statusCode, out statusDescription);
 
             Response.HttpVersion = version;
-            Response.ResponseStatusCode = httpResult[1].Trim();
-            Response.ResponseStatusDescription = httpResult[2].Trim();
+            Response.ResponseStatusCode = statusCode;
+            Response.ResponseStatusDescription = statusDescription;
 
             //For HTTP 1.1 comptibility server may send expect-continue even if not asked for it in request
-            if (Response.ResponseStatusCode.Equals("100")
+            if (Response.ResponseStatusCode == (int)HttpStatusCode.Continue
                 && Response.ResponseStatusDescription.Equals("continue", StringComparison.CurrentCultureIgnoreCase))
             {
                 //Read the next line after 100-continue 
                 Response.Is100Continue = true;
-                Response.ResponseStatusCode = null;
+                Response.ResponseStatusCode = 0;
                 await ServerConnection.StreamReader.ReadLineAsync();
                 //now receive response
                 await ReceiveResponse();
                 return;
             }
-            else if (Response.ResponseStatusCode.Equals("417")
-                 && Response.ResponseStatusDescription.Equals("expectation failed", StringComparison.CurrentCultureIgnoreCase))
+
+            if (Response.ResponseStatusCode == (int)HttpStatusCode.ExpectationFailed
+                && Response.ResponseStatusDescription.Equals("expectation failed", StringComparison.CurrentCultureIgnoreCase))
             {
                 //read next line after expectation failed response
                 Response.ExpectationFailed = true;
-                Response.ResponseStatusCode = null;
+                Response.ResponseStatusCode = 0;
                 await ServerConnection.StreamReader.ReadLineAsync();
                 //now receive response 
                 await ReceiveResponse();
                 return;
             }
 
-            //Read the Response headers
             //Read the response headers in to unique and non-unique header collections
-            string tmpLine;
-            while (!string.IsNullOrEmpty(tmpLine = await ServerConnection.StreamReader.ReadLineAsync()))
-            {
-                var header = tmpLine.Split(ProxyConstants.ColonSplit, 2);
+            await HeaderParser.ReadHeaders(ServerConnection.StreamReader, Response.ResponseHeaders);
+        }
 
-                var newHeader = new HttpHeader(header[0], header[1]);
+        /// <summary>
+        /// Performs application-defined tasks associated with freeing, releasing, or resetting unmanaged resources.
+        /// </summary>
+        public void Dispose()
+        {
+            ConnectRequest = null;
 
-                //if header exist in non-unique header collection add it there
-                if (Response.NonUniqueResponseHeaders.ContainsKey(newHeader.Name))
-                {
-                    Response.NonUniqueResponseHeaders[newHeader.Name].Add(newHeader);
-                }
-                //if header is alread in unique header collection then move both to non-unique collection
-                else if (Response.ResponseHeaders.ContainsKey(newHeader.Name))
-                {
-                    var existing = Response.ResponseHeaders[newHeader.Name];
-
-                    var nonUniqueHeaders = new List<HttpHeader> {existing, newHeader};
-
-                    Response.NonUniqueResponseHeaders.Add(newHeader.Name, nonUniqueHeaders);
-                    Response.ResponseHeaders.Remove(newHeader.Name);
-                }
-                //add to unique header collection
-                else
-                {
-                    Response.ResponseHeaders.Add(newHeader.Name, newHeader);
-                }
-            }
+            Request.Dispose();
+            Response.Dispose();
         }
     }
 }

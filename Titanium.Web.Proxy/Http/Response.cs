@@ -1,141 +1,125 @@
-﻿using System.Collections.Generic;
-using System.IO;
+﻿using System;
 using System.Text;
-using Titanium.Web.Proxy.Models;
 using Titanium.Web.Proxy.Extensions;
-using System;
+using Titanium.Web.Proxy.Models;
+using Titanium.Web.Proxy.Shared;
 
 namespace Titanium.Web.Proxy.Http
 {
     /// <summary>
     /// Http(s) response object
     /// </summary>
-    public class Response
+    public class Response : IDisposable
     {
         /// <summary>
         /// Response Status Code.
         /// </summary>
-        public string ResponseStatusCode { get; set; }
+        public int ResponseStatusCode { get; set; }
+
         /// <summary>
         /// Response Status description.
         /// </summary>
         public string ResponseStatusDescription { get; set; }
 
-        internal Encoding Encoding => this.GetResponseCharacterEncoding();
+        /// <summary>
+        /// Encoding used in response
+        /// </summary>
+        public Encoding Encoding => this.GetResponseCharacterEncoding();
 
-	    /// <summary>
+        /// <summary>
         /// Content encoding for this response
         /// </summary>
-        internal string ContentEncoding
+        public string ContentEncoding => ResponseHeaders.GetHeaderValueOrNull("content-encoding")?.Trim();
+
+        /// <summary>
+        /// Http version
+        /// </summary>
+        public Version HttpVersion { get; set; }
+
+        /// <summary>
+        /// Has response body?
+        /// </summary>
+        public bool HasBody
         {
             get
             {
-                var hasHeader = ResponseHeaders.ContainsKey("content-encoding");
+                //Has body only if response is chunked or content length >0
+                //If none are true then check if connection:close header exist, if so write response until server or client terminates the connection
+                if (IsChunked || ContentLength > 0 || !ResponseKeepAlive)
+                {
+                    return true;
+                }
 
-                if (!hasHeader) return null;
-                var header = ResponseHeaders["content-encoding"];
+                //has response if connection:keep-alive header exist and when version is http/1.0
+                //Because in Http 1.0 server can return a response without content-length (expectation being client would read until end of stream)
+                if (ResponseKeepAlive && HttpVersion.Minor == 0)
+                {
+                    return true;
+                }
 
-                return header.Value.Trim();
+                return false;
             }
         }
-
-        internal Version HttpVersion { get; set; }
 
         /// <summary>
         /// Keep the connection alive?
         /// </summary>
-        internal bool ResponseKeepAlive
+        public bool ResponseKeepAlive
         {
             get
             {
-                var hasHeader = ResponseHeaders.ContainsKey("connection");
+                string headerValue = ResponseHeaders.GetHeaderValueOrNull("connection");
 
-                if (hasHeader)
+                if (headerValue != null)
                 {
-                    var header = ResponseHeaders["connection"];
-
-                    if (header.Value.ContainsIgnoreCase("close"))
+                    if (headerValue.ContainsIgnoreCase("close"))
                     {
                         return false;
                     }
                 }
 
                 return true;
-
             }
         }
 
         /// <summary>
         /// Content type of this response
         /// </summary>
-        public string ContentType
-        {
-            get
-            {
-                var hasHeader = ResponseHeaders.ContainsKey("content-type");
-
-                if (hasHeader)
-                {
-                    var header = ResponseHeaders["content-type"];
-
-                    return header.Value;
-                }
-
-                return null;
-
-            }
-        }
+        public string ContentType => ResponseHeaders.GetHeaderValueOrNull("content-type");
 
         /// <summary>
         /// Length of response body
         /// </summary>
-        internal long ContentLength
+        public long ContentLength
         {
             get
             {
-                var hasHeader = ResponseHeaders.ContainsKey("content-length");
+                string headerValue = ResponseHeaders.GetHeaderValueOrNull("content-length");
 
-                if (hasHeader == false)
+                if (headerValue == null)
                 {
                     return -1;
                 }
 
-                var header = ResponseHeaders["content-length"];
-
                 long contentLen;
-                long.TryParse(header.Value, out contentLen);
+                long.TryParse(headerValue, out contentLen);
                 if (contentLen >= 0)
                 {
                     return contentLen;
                 }
 
                 return -1;
-
             }
             set
             {
-                var hasHeader = ResponseHeaders.ContainsKey("content-length");
-
                 if (value >= 0)
                 {
-                    if (hasHeader)
-                    {
-                        var header = ResponseHeaders["content-length"];
-                        header.Value = value.ToString();
-                    }
-                    else
-                    {
-                        ResponseHeaders.Add("content-length", new HttpHeader("content-length", value.ToString()));
-                    }
-
+                    ResponseHeaders.SetOrAddHeaderValue("content-length", value.ToString());
                     IsChunked = false;
                 }
                 else
                 {
-                    if (hasHeader)
-                    {
-                        ResponseHeaders.Remove("content-length");
-                    }
+                    ResponseHeaders.RemoveHeader("content-length");
                 }
             }
         }
@@ -143,82 +127,50 @@ namespace Titanium.Web.Proxy.Http
         /// <summary>
         /// Response transfer-encoding is chunked?
         /// </summary>
-        internal bool IsChunked
+        public bool IsChunked
         {
             get
             {
-                var hasHeader = ResponseHeaders.ContainsKey("transfer-encoding");
-
-                if (hasHeader)
-                {
-                    var header = ResponseHeaders["transfer-encoding"];
-
-                    if (header.Value.ContainsIgnoreCase("chunked"))
-                    {
-                        return true;
-                    }         
-                }
-
-                return false;
-
+                string headerValue = ResponseHeaders.GetHeaderValueOrNull("transfer-encoding");
+                return headerValue != null && headerValue.ContainsIgnoreCase("chunked");
             }
             set
             {
-                var hasHeader = ResponseHeaders.ContainsKey("transfer-encoding");
-
                 if (value)
                 {
-                    if (hasHeader)
-                    {
-                        var header = ResponseHeaders["transfer-encoding"];
-                        header.Value = "chunked";
-                    }
-                    else
-                    {
-                        ResponseHeaders.Add("transfer-encoding", new HttpHeader("transfer-encoding", "chunked"));
-                    }
-
+                    ResponseHeaders.SetOrAddHeaderValue("transfer-encoding", "chunked");
                     ContentLength = -1;
                 }
                 else
                 {
-                    if (hasHeader)
-                    {
-                        ResponseHeaders.Remove("transfer-encoding");
-                    }
-                       
+                    ResponseHeaders.RemoveHeader("transfer-encoding");
                 }
-
             }
         }
 
         /// <summary>
         /// Collection of all response headers
         /// </summary>
-        public Dictionary<string, HttpHeader> ResponseHeaders { get; set; }
+        public HeaderCollection ResponseHeaders { get; private set; } = new HeaderCollection();
 
         /// <summary>
-        /// Non Unique headers
-        /// </summary>
-        public Dictionary<string, List<HttpHeader>> NonUniqueResponseHeaders { get; set; }
-
-
-        /// <summary>
-        /// Response network stream
-        /// </summary>
-        public Stream ResponseStream { get; set; }
-
-        /// <summary>
-        /// response body contenst as byte array
+        /// Response body content as byte array
         /// </summary>
         internal byte[] ResponseBody { get; set; }
 
         /// <summary>
-        /// response body as string
+        /// Response body as string
         /// </summary>
         internal string ResponseBodyString { get; set; }
 
+        /// <summary>
+        /// Was response body read by user
+        /// </summary>
         internal bool ResponseBodyRead { get; set; }
+
+        /// <summary>
+        /// Is response is no more modifyable by user (user callbacks complete?)
+        /// </summary>
         internal bool ResponseLocked { get; set; }
 
         /// <summary>
@@ -232,13 +184,68 @@ namespace Titanium.Web.Proxy.Http
         public bool ExpectationFailed { get; internal set; }
 
         /// <summary>
+        /// Gets the resposne status.
+        /// </summary>
+        public string ResponseStatus => $"HTTP/{HttpVersion?.Major}.{HttpVersion?.Minor} {ResponseStatusCode} {ResponseStatusDescription}";
+
+        /// <summary>
+        /// Gets the header text.
+        /// </summary>
+        public string HeaderText
+        {
+            get
+            {
+                var sb = new StringBuilder();
+                sb.AppendLine(ResponseStatus);
+                foreach (var header in ResponseHeaders)
+                {
+                    sb.AppendLine(header.ToString());
+                }
+
+                sb.AppendLine();
+                return sb.ToString();
+            }
+        }
+
+        internal static void ParseResponseLine(string httpStatus, out Version version, out int statusCode, out string statusDescription)
+        {
+            var httpResult = httpStatus.Split(ProxyConstants.SpaceSplit, 3);
+            if (httpResult.Length != 3)
+            {
+                throw new Exception("Invalid HTTP status line: " + httpStatus);
+            }
+
+            string httpVersion = httpResult[0];
+
+            version = HttpHeader.Version11;
+            if (string.Equals(httpVersion, "HTTP/1.0", StringComparison.OrdinalIgnoreCase))
+            {
+                version = HttpHeader.Version10;
+            }
+
+            statusCode = int.Parse(httpResult[1]);
+            statusDescription = httpResult[2];
+        }
+
+        /// <summary>
         /// Constructor.
         /// </summary>
         public Response()
         {
-            ResponseHeaders = new Dictionary<string, HttpHeader>(StringComparer.OrdinalIgnoreCase);
-            NonUniqueResponseHeaders = new Dictionary<string, List<HttpHeader>>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// Dispose off 
+        /// </summary>
+        public void Dispose()
+        {
+            //not really needed since GC will collect it
+            //but just to be on safe side
+
+            ResponseHeaders = null;
+
+            ResponseBody = null;
+            ResponseBodyString = null;
         }
     }
-
 }

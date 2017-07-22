@@ -1,8 +1,8 @@
 ﻿using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Titanium.Web.Proxy.Network;
-using System.Threading.Tasks;
-using System.Collections.Generic;
 
 namespace Titanium.Web.Proxy.UnitTests
 {
@@ -10,8 +10,7 @@ namespace Titanium.Web.Proxy.UnitTests
     public class CertificateManagerTests
     {
         private static readonly string[] hostNames
-            = new string[] { "facebook.com", "youtube.com", "google.com",
-                                "bing.com", "yahoo.com"};
+            = { "facebook.com", "youtube.com", "google.com", "bing.com", "yahoo.com" };
 
         private readonly Random random = new Random();
 
@@ -20,14 +19,13 @@ namespace Titanium.Web.Proxy.UnitTests
         {
             var tasks = new List<Task>();
 
-            var mgr = new CertificateManager(CertificateEngine.DefaultWindows, "Titanium", "Titanium Root Certificate Authority", 
-                new Lazy<Action<Exception>>(() => (e => { })).Value);
+            var mgr = new CertificateManager(new Lazy<Action<Exception>>(() => (e => { })).Value);
 
             mgr.ClearIdleCertificates(1);
 
             for (int i = 0; i < 1000; i++)
             {
-                foreach (var host in hostNames)
+                foreach (string host in hostNames)
                 {
                     tasks.Add(Task.Run(async () =>
                     {
@@ -37,16 +35,13 @@ namespace Titanium.Web.Proxy.UnitTests
                         var certificate = mgr.CreateCertificate(host, false);
 
                         Assert.IsNotNull(certificate);
-
                     }));
-
                 }
             }
 
             await Task.WhenAll(tasks.ToArray());
 
             mgr.StopClearIdleCertificates();
-
         }
     }
 }

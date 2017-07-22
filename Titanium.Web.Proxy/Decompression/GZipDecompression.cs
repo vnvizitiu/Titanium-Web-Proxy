@@ -1,4 +1,5 @@
-﻿using System.IO;
+﻿using StreamExtended.Helpers;
+using System.IO;
 using System.IO.Compression;
 using System.Threading.Tasks;
 
@@ -13,15 +14,23 @@ namespace Titanium.Web.Proxy.Decompression
         {
             using (var decompressor = new GZipStream(new MemoryStream(compressedArray), CompressionMode.Decompress))
             {
-                var buffer = new byte[bufferSize];
-                using (var output = new MemoryStream())
+                var buffer = BufferPool.GetBuffer(bufferSize);
+                try
                 {
-                    int read;
-                    while ((read = await decompressor.ReadAsync(buffer, 0, buffer.Length)) > 0)
+                    using (var output = new MemoryStream())
                     {
-                       await output.WriteAsync(buffer, 0, read);
+                        int read;
+                        while ((read = await decompressor.ReadAsync(buffer, 0, buffer.Length)) > 0)
+                        {
+                            output.Write(buffer, 0, read);
+                        }
+
+                        return output.ToArray();
                     }
-                    return output.ToArray();
+                }
+                finally
+                {
+                    BufferPool.ReturnBuffer(buffer);
                 }
             }
         }

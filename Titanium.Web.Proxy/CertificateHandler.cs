@@ -1,8 +1,8 @@
 ﻿using System;
 using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
-using System.Threading.Tasks;
 using Titanium.Web.Proxy.EventArguments;
+using Titanium.Web.Proxy.Extensions;
 
 namespace Titanium.Web.Proxy
 {
@@ -16,11 +16,7 @@ namespace Titanium.Web.Proxy
         /// <param name="chain"></param>
         /// <param name="sslPolicyErrors"></param>
         /// <returns></returns>
-        private bool ValidateServerCertificate(
-          object sender,
-          X509Certificate certificate,
-          X509Chain chain,
-          SslPolicyErrors sslPolicyErrors)
+        internal bool ValidateServerCertificate(object sender, X509Certificate certificate, X509Chain chain, SslPolicyErrors sslPolicyErrors)
         {
             //if user callback is registered then do it
             if (ServerCertificateValidationCallback != null)
@@ -32,18 +28,8 @@ namespace Titanium.Web.Proxy
                     SslPolicyErrors = sslPolicyErrors
                 };
 
-
-
-                Delegate[] invocationList = ServerCertificateValidationCallback.GetInvocationList();
-                Task[] handlerTasks = new Task[invocationList.Length];
-
-                for (int i = 0; i < invocationList.Length; i++)
-                {
-                    handlerTasks[i] = ((Func<object, CertificateValidationEventArgs, Task>)invocationList[i])(null, args);
-                }
-
-                Task.WhenAll(handlerTasks).Wait();
-
+                //why is the sender null?
+                ServerCertificateValidationCallback.InvokeParallel(this, args);
                 return args.IsValid;
             }
 
@@ -66,22 +52,15 @@ namespace Titanium.Web.Proxy
         /// <param name="remoteCertificate"></param>
         /// <param name="acceptableIssuers"></param>
         /// <returns></returns>
-        private X509Certificate SelectClientCertificate(
-            object sender,
-            string targetHost,
-            X509CertificateCollection localCertificates,
-            X509Certificate remoteCertificate,
-            string[] acceptableIssuers)
+        internal X509Certificate SelectClientCertificate(object sender, string targetHost, X509CertificateCollection localCertificates,
+            X509Certificate remoteCertificate, string[] acceptableIssuers)
         {
             X509Certificate clientCertificate = null;
 
-            if (acceptableIssuers != null &&
-                acceptableIssuers.Length > 0 &&
-                localCertificates != null &&
-                localCertificates.Count > 0)
+            if (acceptableIssuers != null && acceptableIssuers.Length > 0 && localCertificates != null && localCertificates.Count > 0)
             {
                 // Use the first certificate that is from an acceptable issuer.
-                foreach (X509Certificate certificate in localCertificates)
+                foreach (var certificate in localCertificates)
                 {
                     string issuer = certificate.Issuer;
                     if (Array.IndexOf(acceptableIssuers, issuer) != -1)
@@ -91,8 +70,7 @@ namespace Titanium.Web.Proxy
                 }
             }
 
-            if (localCertificates != null &&
-                localCertificates.Count > 0)
+            if (localCertificates != null && localCertificates.Count > 0)
             {
                 clientCertificate = localCertificates[0];
             }
@@ -109,17 +87,8 @@ namespace Titanium.Web.Proxy
                     ClientCertificate = clientCertificate
                 };
 
-
-                Delegate[] invocationList = ClientCertificateSelectionCallback.GetInvocationList();
-                Task[] handlerTasks = new Task[invocationList.Length];
-
-                for (int i = 0; i < invocationList.Length; i++)
-                {
-                    handlerTasks[i] = ((Func<object, CertificateSelectionEventArgs, Task>)invocationList[i])(null, args);
-                }
-
-                Task.WhenAll(handlerTasks).Wait();
-
+                //why is the sender null?
+                ClientCertificateSelectionCallback.InvokeParallel(this, args);
                 return args.ClientCertificate;
             }
 

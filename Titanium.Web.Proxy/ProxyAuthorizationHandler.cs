@@ -1,10 +1,11 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.IO;
 using System.Linq;
+using System.Net;
 using System.Text;
 using System.Threading.Tasks;
+using Titanium.Web.Proxy.EventArguments;
 using Titanium.Web.Proxy.Exceptions;
+using Titanium.Web.Proxy.Helpers;
 using Titanium.Web.Proxy.Http;
 using Titanium.Web.Proxy.Models;
 
@@ -12,111 +13,70 @@ namespace Titanium.Web.Proxy
 {
     public partial class ProxyServer
     {
-
-        private async Task<bool> CheckAuthorization(StreamWriter clientStreamWriter, IEnumerable<HttpHeader> headers)
+        private async Task<bool> CheckAuthorization(HttpResponseWriter clientStreamWriter, SessionEventArgs session)
         {
             if (AuthenticateUserFunc == null)
             {
                 return true;
             }
 
-            var httpHeaders = headers as HttpHeader[] ?? headers.ToArray();
+            var httpHeaders = session.WebSession.Request.RequestHeaders.ToArray();
 
             try
             {
-                if (httpHeaders.All(t => t.Name != "Proxy-Authorization"))
+                var header = httpHeaders.FirstOrDefault(t => t.Name == "Proxy-Authorization");
+                if (header == null)
                 {
-
-                    await WriteResponseStatus(new Version(1, 1), "407",
-                                "Proxy Authentication Required", clientStreamWriter);
-                    var response = new Response
-                    {
-                        ResponseHeaders = new Dictionary<string, HttpHeader>
-                        {
-                            {
-                                "Proxy-Authenticate",
-                                new HttpHeader("Proxy-Authenticate", "Basic realm=\"TitaniumProxy\"")
-                            },
-                            {"Proxy-Connection", new HttpHeader("Proxy-Connection", "close")}
-                        }
-                    };
-                    await WriteResponseHeaders(clientStreamWriter, response);
-
-                    await clientStreamWriter.WriteLineAsync();
+                    session.WebSession.Response = await SendAuthentication407Response(clientStreamWriter, "Proxy Authentication Required");
                     return false;
                 }
-                var header = httpHeaders.FirstOrDefault(t => t.Name == "Proxy-Authorization");
-                if (null == header) throw new NullReferenceException();
-                var headerValue = header.Value.Trim();
+
+                string headerValue = header.Value.Trim();
                 if (!headerValue.StartsWith("basic", StringComparison.CurrentCultureIgnoreCase))
                 {
                     //Return not authorized
-                    await WriteResponseStatus(new Version(1, 1), "407",
-                        "Proxy Authentication Invalid", clientStreamWriter);
-                    var response = new Response
-                    {
-                        ResponseHeaders = new Dictionary<string, HttpHeader>
-                        {
-                            {
-                                "Proxy-Authenticate",
-                                new HttpHeader("Proxy-Authenticate", "Basic realm=\"TitaniumProxy\"")
-                            },
-                            {"Proxy-Connection", new HttpHeader("Proxy-Connection", "close")}
-                        }
-                    };
-                    await WriteResponseHeaders(clientStreamWriter, response);
-
-                    await clientStreamWriter.WriteLineAsync();
+                    session.WebSession.Response = await SendAuthentication407Response(clientStreamWriter, "Proxy Authentication Invalid");
                     return false;
                 }
+
                 headerValue = headerValue.Substring(5).Trim();
 
-                var decoded = Encoding.UTF8.GetString(Convert.FromBase64String(headerValue));
+                string decoded = Encoding.UTF8.GetString(Convert.FromBase64String(headerValue));
                 if (decoded.Contains(":") == false)
                 {
                     //Return not authorized
-                    await WriteResponseStatus(new Version(1, 1), "407",
-                        "Proxy Authentication Invalid", clientStreamWriter);
-                    var response = new Response
-                    {
-                        ResponseHeaders = new Dictionary<string, HttpHeader>
-                        {
-                            {
-                                "Proxy-Authenticate",
-                                new HttpHeader("Proxy-Authenticate", "Basic realm=\"TitaniumProxy\"")
-                            },
-                            {"Proxy-Connection", new HttpHeader("Proxy-Connection", "close")}
-                        }
-                    };
-                    await WriteResponseHeaders(clientStreamWriter, response);
-
-                    await clientStreamWriter.WriteLineAsync();
+                    session.WebSession.Response = await SendAuthentication407Response(clientStreamWriter, "Proxy Authentication Invalid");
                     return false;
                 }
-                var username = decoded.Substring(0, decoded.IndexOf(':'));
-                var password = decoded.Substring(decoded.IndexOf(':') + 1);
+
+                string username = decoded.Substring(0, decoded.IndexOf(':'));
+                string password = decoded.Substring(decoded.IndexOf(':') + 1);
                 return await AuthenticateUserFunc(username, password);
             }
             catch (Exception e)
             {
                 ExceptionFunc(new ProxyAuthorizationException("Error whilst authorizing request", e, httpHeaders));
-                //Return not authorized
-                await WriteResponseStatus(new Version(1, 1), "407",
-                             "Proxy Authentication Invalid", clientStreamWriter);
-                var response = new Response
-                {
-                    ResponseHeaders = new Dictionary<string, HttpHeader>
-                    {
-                        {"Proxy-Authenticate", new HttpHeader("Proxy-Authenticate", "Basic realm=\"TitaniumProxy\"")},
-                        {"Proxy-Connection", new HttpHeader("Proxy-Connection", "close")}
-                    }
-                };
-                await WriteResponseHeaders(clientStreamWriter, response);
 
-                await clientStreamWriter.WriteLineAsync();
+                //Return not authorized
+                session.WebSession.Response = await SendAuthentication407Response(clientStreamWriter, "Proxy Authentication Invalid");
                 return false;
             }
+        }
 
+        private async Task<Response> SendAuthentication407Response(HttpResponseWriter clientStreamWriter, string description)
+        {
+            var response = new Response
+            {
+                HttpVersion = HttpHeader.Version11,
+                ResponseStatusCode = (int)HttpStatusCode.ProxyAuthenticationRequired,
+                ResponseStatusDescription = description
+            };
+
+            response.ResponseHeaders.AddHeader("Proxy-Authenticate", $"Basic realm=\"{ProxyRealm}\"");
+            response.ResponseHeaders.AddHeader("Proxy-Connection", "close");
+
+            await clientStreamWriter.WriteResponseAsync(response);
+            return response;
         }
     }
 }

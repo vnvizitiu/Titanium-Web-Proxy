@@ -3,21 +3,23 @@
   <metadata>
     <id>Titanium.Web.Proxy</id>
     <version>$version$</version>
-    <title>Titanium web proxy</title>
-    <authors>Titanium</authors>
-    <owners>Titanium</owners>
-    <licenseUrl>https://github.com/titanium007/Titanium/blob/master/LICENSE</licenseUrl>
-    <projectUrl>https://github.com/titanium007/Titanium/</projectUrl>
+    <title>Titanium Web Proxy</title>
+    <authors>Titanium Web Proxy GitHub Contributors</authors>
+    <owners>justcoding121</owners>
+    <licenseUrl>https://github.com/justcoding121/Titanium-Web-Proxy/blob/develop/LICENSE</licenseUrl>
+    <projectUrl>https://github.com/justcoding121/Titanium-Web-Proxy</projectUrl>
     <requireLicenseAcceptance>false</requireLicenseAcceptance>
     <description>Titanium is a light weight web proxy.</description>
     <releaseNotes></releaseNotes>
     <copyright>Copyright &#x00A9; Titanium.  All rights reserved.</copyright>
     <tags></tags>
 	 <dependencies>
-		 <dependency id="BouncyCastle" version="1.8.1" />
+	    <dependency id="StreamExtended" version="1.0.18" />
+        <dependency id="Portable.BouncyCastle" version="1.8.1.2" />
     </dependencies>
   </metadata>
   <files>
 	<file src="bin\$configuration$\Titanium.Web.Proxy.dll" target="lib\net45"  />
+		<file src="bin\$configuration$\netstandard1.6\Titanium.Web.Proxy.*" target="lib\netstandard1.6"  />
   </files>
 </package>

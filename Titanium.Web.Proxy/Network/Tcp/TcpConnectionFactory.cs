@@ -1,87 +1,101 @@
-﻿using System;
+﻿using StreamExtended.Network;
+using System;
+using System.Linq;
+using System.Net;
+using System.Net.Security;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading.Tasks;
-using System.IO;
-using System.Net.Security;
+using Titanium.Web.Proxy.Extensions;
 using Titanium.Web.Proxy.Helpers;
 using Titanium.Web.Proxy.Models;
-using System.Security.Authentication;
-using System.Linq;
-using Titanium.Web.Proxy.Extensions;
-using Titanium.Web.Proxy.Shared;
 
 namespace Titanium.Web.Proxy.Network.Tcp
 {
-    using System.Net;
-
     /// <summary>
     /// A class that manages Tcp Connection to server used by this proxy server
     /// </summary>
     internal class TcpConnectionFactory
     {
         /// <summary>
-        /// Creates a TCP connection to server
+        ///  Creates a TCP connection to server
         /// </summary>
-        /// <param name="bufferSize"></param>
-        /// <param name="connectionTimeOutSeconds"></param>
+        /// <param name="server"></param>
         /// <param name="remoteHostName"></param>
+        /// <param name="remotePort"></param>
         /// <param name="httpVersion"></param>
         /// <param name="isHttps"></param>
-        /// <param name="remotePort"></param>
-        /// <param name="supportedSslProtocols"></param>
-        /// <param name="remoteCertificateValidationCallback"></param>
-        /// <param name="localCertificateSelectionCallback"></param>
+        /// <param name="isConnect"></param>
+        /// <param name="upStreamEndPoint"></param>
         /// <param name="externalHttpProxy"></param>
         /// <param name="externalHttpsProxy"></param>
-        /// <param name="clientStream"></param>
-        /// <param name="upStreamEndPoint"></param>
         /// <returns></returns>
-        internal async Task<TcpConnection> CreateClient(int bufferSize, int connectionTimeOutSeconds,
-            string remoteHostName, int remotePort, Version httpVersion,
-            bool isHttps, SslProtocols supportedSslProtocols,
-            RemoteCertificateValidationCallback remoteCertificateValidationCallback, LocalCertificateSelectionCallback localCertificateSelectionCallback,
-            ExternalProxy externalHttpProxy, ExternalProxy externalHttpsProxy,
-            Stream clientStream, IPEndPoint upStreamEndPoint)
+        internal async Task<TcpConnection> CreateClient(ProxyServer server, 
+            string remoteHostName, int remotePort, Version httpVersion, bool isHttps,
+            bool isConnect, IPEndPoint upStreamEndPoint, ExternalProxy externalHttpProxy, ExternalProxy externalHttpsProxy)
         {
-            TcpClient client;
-                CustomBufferedStream stream;
+            bool useUpstreamProxy = false;
+            var externalProxy = isHttps ? externalHttpsProxy : externalHttpProxy;
 
-            bool isLocalhost = (externalHttpsProxy == null && externalHttpProxy == null) ? false : NetworkHelper.IsLocalIpAddress(remoteHostName);
-            
-            bool useHttpsProxy = externalHttpsProxy != null && externalHttpsProxy.HostName != remoteHostName && (externalHttpsProxy.BypassForLocalhost && !isLocalhost);
-            bool useHttpProxy = externalHttpProxy != null && externalHttpProxy.HostName != remoteHostName && (externalHttpProxy.BypassForLocalhost && !isLocalhost);
-
-            if (isHttps)
+            //check if external proxy is set for HTTP/HTTPS
+            if (externalProxy != null && !(externalProxy.HostName == remoteHostName && externalProxy.Port == remotePort))
             {
-                SslStream sslStream = null;
+                useUpstreamProxy = true;
 
-                //If this proxy uses another external proxy then create a tunnel request for HTTPS connections
-                if (useHttpsProxy)
+                //check if we need to ByPass
+                if (externalProxy.BypassLocalhost && NetworkHelper.IsLocalIpAddress(remoteHostName))
                 {
-                    client = new TcpClient(upStreamEndPoint);
-                    await client.ConnectAsync(externalHttpsProxy.HostName, externalHttpsProxy.Port);
-                    stream = new CustomBufferedStream(client.GetStream(), bufferSize);
+                    useUpstreamProxy = false;
+                }
+            }
 
-                    using (var writer = new StreamWriter(stream, Encoding.ASCII, bufferSize, true) { NewLine = ProxyConstants.NewLine })
+            TcpClient client = null;
+            CustomBufferedStream stream = null;
+
+            try
+            {
+#if NET45
+                client = new TcpClient(upStreamEndPoint);
+#else
+                client = new TcpClient();
+                client.Client.Bind(upStreamEndPoint);
+#endif
+
+                //If this proxy uses another external proxy then create a tunnel request for HTTP/HTTPS connections
+                if (useUpstreamProxy)
+                {
+                    await client.ConnectAsync(externalProxy.HostName, externalProxy.Port);
+                }
+                else
+                {
+                    await client.ConnectAsync(remoteHostName, remotePort);
+                }
+
+                stream = new CustomBufferedStream(client.GetStream(), server.BufferSize);
+
+                if (useUpstreamProxy && (isConnect || isHttps))
+                {
+                    using (var writer = new HttpRequestWriter(stream, server.BufferSize))
                     {
                         await writer.WriteLineAsync($"CONNECT {remoteHostName}:{remotePort} HTTP/{httpVersion}");
                         await writer.WriteLineAsync($"Host: {remoteHostName}:{remotePort}");
                         await writer.WriteLineAsync("Connection: Keep-Alive");
 
-                        if (!string.IsNullOrEmpty(externalHttpsProxy.UserName) && externalHttpsProxy.Password != null)
+                        if (!string.IsNullOrEmpty(externalProxy.UserName) && externalProxy.Password != null)
                         {
-                            await writer.WriteLineAsync("Proxy-Connection: keep-alive");
-                            await writer.WriteLineAsync("Proxy-Authorization" + ": Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes(externalHttpsProxy.UserName + ":" + externalHttpsProxy.Password)));
+                            await HttpHeader.ProxyConnectionKeepAlive.WriteToStreamAsync(writer);
+                            await writer.WriteLineAsync("Proxy-Authorization" + ": Basic " +
+                                                        Convert.ToBase64String(Encoding.UTF8.GetBytes(
+                                                            externalProxy.UserName + ":" + externalProxy.Password)));
                         }
+
                         await writer.WriteLineAsync();
                         await writer.FlushAsync();
-                        writer.Close();
                     }
 
-                    using (var reader = new CustomBinaryReader(stream, bufferSize))
+                    using (var reader = new CustomBinaryReader(stream, server.BufferSize))
                     {
-                        var result = await reader.ReadLineAsync();
+                        string result = await reader.ReadLineAsync();
 
                         if (!new[] { "200 OK", "connection established" }.Any(s => result.ContainsIgnoreCase(s)))
                         {
@@ -91,61 +105,39 @@ namespace Titanium.Web.Proxy.Network.Tcp
                         await reader.ReadAndIgnoreAllLinesAsync();
                     }
                 }
-                else
+
+                if (isHttps)
                 {
-                    client = new TcpClient(upStreamEndPoint);
-                    await client.ConnectAsync(remoteHostName, remotePort);
-                    stream = new CustomBufferedStream(client.GetStream(), bufferSize);
+
+                    var sslStream = new SslStream(stream, false, server.ValidateServerCertificate, server.SelectClientCertificate);
+                    stream = new CustomBufferedStream(sslStream, server.BufferSize);
+
+                    await sslStream.AuthenticateAsClientAsync(remoteHostName, null, server.SupportedSslProtocols, server.CheckCertificateRevocation);
                 }
 
-                try
-                {
-                    sslStream = new SslStream(stream, true, remoteCertificateValidationCallback,
-                        localCertificateSelectionCallback);
-
-                    await sslStream.AuthenticateAsClientAsync(remoteHostName, null, supportedSslProtocols, false);
-
-                    stream = new CustomBufferedStream(sslStream, bufferSize);
-                }
-                catch
-                {
-                    sslStream?.Dispose();
-
-                    throw;
-                }
+                client.ReceiveTimeout = server.ConnectionTimeOutSeconds * 1000;
+                client.SendTimeout = server.ConnectionTimeOutSeconds * 1000;
             }
-            else
+            catch (Exception)
             {
-                if (useHttpProxy)
-                {
-                    client = new TcpClient(upStreamEndPoint);
-                    await client.ConnectAsync(externalHttpProxy.HostName, externalHttpProxy.Port);
-                    stream = new CustomBufferedStream(client.GetStream(), bufferSize);
-                }
-                else
-                {
-                    client = new TcpClient(upStreamEndPoint);
-                    await client.ConnectAsync(remoteHostName, remotePort);
-                    stream = new CustomBufferedStream(client.GetStream(), bufferSize);
-                }
+                stream?.Dispose();
+                client?.Dispose();
+                throw;
             }
 
-            client.ReceiveTimeout = connectionTimeOutSeconds * 1000;
-            client.SendTimeout = connectionTimeOutSeconds * 1000;
-
-            stream.ReadTimeout = connectionTimeOutSeconds * 1000;
-            stream.WriteTimeout = connectionTimeOutSeconds * 1000;
-
+            server.UpdateServerConnectionCount(true);
 
             return new TcpConnection
             {
                 UpStreamHttpProxy = externalHttpProxy,
                 UpStreamHttpsProxy = externalHttpsProxy,
+                UpStreamEndPoint = upStreamEndPoint,
                 HostName = remoteHostName,
                 Port = remotePort,
                 IsHttps = isHttps,
+                UseUpstreamProxy = useUpstreamProxy,
                 TcpClient = client,
-                StreamReader = new CustomBinaryReader(stream, bufferSize),
+                StreamReader = new CustomBinaryReader(stream, server.BufferSize),
                 Stream = stream,
                 Version = httpVersion
             };

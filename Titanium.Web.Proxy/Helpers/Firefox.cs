@@ -11,56 +11,37 @@ namespace Titanium.Web.Proxy.Helpers
         /// <summary>
         /// Add Firefox settings.
         /// </summary>
-        internal void AddFirefox()
+        internal void UseSystemProxy()
         {
             try
             {
                 var myProfileDirectory =
-                    new DirectoryInfo(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData) +
-                                      "\\Mozilla\\Firefox\\Profiles\\").GetDirectories("*.default");
-                var myFfPrefFile = myProfileDirectory[0].FullName + "\\prefs.js";
-                if (!File.Exists(myFfPrefFile)) return;
+                    new DirectoryInfo(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData) + "\\Mozilla\\Firefox\\Profiles\\")
+                        .GetDirectories("*.default");
+                string myFfPrefFile = myProfileDirectory[0].FullName + "\\prefs.js";
+                if (!File.Exists(myFfPrefFile))
+                {
+                    return;
+                }
+
                 // We have a pref file so let''s make sure it has the proxy setting
                 var myReader = new StreamReader(myFfPrefFile);
-                var myPrefContents = myReader.ReadToEnd();
+                string myPrefContents = myReader.ReadToEnd();
                 myReader.Close();
-                if (!myPrefContents.Contains("user_pref(\"network.proxy.type\", 0);")) return;
-                // Add the proxy enable line and write it back to the file
-                myPrefContents = myPrefContents.Replace("user_pref(\"network.proxy.type\", 0);", "");
+
+                for (int i = 0; i <= 4; i++)
+                {
+                    string searchStr = $"user_pref(\"network.proxy.type\", {i});";
+
+                    if (myPrefContents.Contains(searchStr))
+                    {
+                        // Add the proxy enable line and write it back to the file
+                        myPrefContents = myPrefContents.Replace(searchStr, "user_pref(\"network.proxy.type\", 5);");
+                    }
+                }
 
                 File.Delete(myFfPrefFile);
                 File.WriteAllText(myFfPrefFile, myPrefContents);
-            }
-            catch (Exception)
-            {
-                // Only exception should be a read/write error because the user opened up FireFox so they can be ignored.
-            }
-        }
-
-        /// <summary>
-        /// Remove firefox settings.
-        /// </summary>
-        internal void RemoveFirefox()
-        {
-            try
-            {
-                var myProfileDirectory =
-                    new DirectoryInfo(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData) +
-                                      "\\Mozilla\\Firefox\\Profiles\\").GetDirectories("*.default");
-                var myFfPrefFile = myProfileDirectory[0].FullName + "\\prefs.js";
-                if (!File.Exists(myFfPrefFile)) return;
-                // We have a pref file so let''s make sure it has the proxy setting
-                var myReader = new StreamReader(myFfPrefFile);
-                var myPrefContents = myReader.ReadToEnd();
-                myReader.Close();
-                if (!myPrefContents.Contains("user_pref(\"network.proxy.type\", 0);"))
-                {
-                    // Add the proxy enable line and write it back to the file
-                    myPrefContents = myPrefContents + "\n\r" + "user_pref(\"network.proxy.type\", 0);";
-
-                    File.Delete(myFfPrefFile);
-                    File.WriteAllText(myFfPrefFile, myPrefContents);
-                }
             }
             catch (Exception)
             {
